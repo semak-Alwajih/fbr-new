@@ -1,0 +1,15 @@
+{
+  "customers": [],
+  "products": [],
+  "invoices": [],
+  "logs": [],
+  "settings": {
+    "companyName": "",
+    "ntn": "",
+    "address": "",
+    "invoicePrefix": "INV",
+    "defaultTaxRate": "18",
+    "fbrBaseUrl": "",
+    "fbrApiKey": ""
+  }
+}
