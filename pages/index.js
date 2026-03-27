@@ -14,6 +14,7 @@ const api = {
 
 const emptyCustomer = { name: '', ntnCnic: '', phone: '', email: '', address: '' }
 const emptyProduct = { name: '', sku: '', hsCode: '', uom: '', taxRate: '18', unitPrice: '', description: '' }
+const emptyLine = { productId: '', description: '', quantity: 1, unitPrice: 0, taxRate: 18, hsCode: '', uom: '' }
 
 function calc(lines) {
   const subTotal = lines.reduce((s, line) => s + Number(line.quantity || 0) * Number(line.unitPrice || 0), 0)
@@ -23,7 +24,7 @@ function calc(lines) {
 
 export default function Home() {
   const [token, setToken] = useState('')
-  const [active, setActive] = useState('dashboard')
+  const [active, setActive] = useState('invoice')
   const [data, setData] = useState({ customers: [], products: [], invoices: [], logs: [], settings: {} })
   const [login, setLogin] = useState({ email: 'admin@example.com', password: 'admin123', error: '' })
   const [customer, setCustomer] = useState(emptyCustomer)
@@ -31,9 +32,12 @@ export default function Home() {
   const [invoice, setInvoice] = useState({
     customerId: '',
     invoiceDate: new Date().toISOString().slice(0, 10),
-    lines: [{ productId: '', description: '', quantity: 1, unitPrice: 0, taxRate: 18, hsCode: '', uom: '' }]
+    lines: [{ ...emptyLine }]
   })
+  const [showNewCustomer, setShowNewCustomer] = useState(false)
+  const [saveProductPrompt, setSaveProductPrompt] = useState({ open: false, lineIndex: null })
   const [msg, setMsg] = useState('')
+  const [pageError, setPageError] = useState('')
 
   const loadAll = async () => {
     const [customers, products, invoices, logs, settings] = await Promise.all([
@@ -54,16 +58,16 @@ export default function Home() {
 
   useEffect(() => {
     const saved = localStorage.getItem('token')
-    if (saved) {
-      setToken(saved)
-    }
+    if (saved) setToken(saved)
   }, [])
 
   useEffect(() => {
-    if (token) loadAll().catch(() => {
-      localStorage.removeItem('token')
-      setToken('')
-    })
+    if (token) {
+      loadAll().catch(() => {
+        localStorage.removeItem('token')
+        setToken('')
+      })
+    }
   }, [token])
 
   const metrics = useMemo(() => ({
@@ -104,22 +108,130 @@ export default function Home() {
   const updateLine = (i, key, value) => {
     const next = [...invoice.lines]
     next[i] = { ...next[i], [key]: value }
+
     if (key === 'productId') {
       const p = data.products.find(x => x.id === value)
-      if (p) next[i] = { ...next[i], productId: p.id, description: p.name, quantity: 1, unitPrice: p.unitPrice, taxRate: p.taxRate, hsCode: p.hsCode || '', uom: p.uom || '' }
+      if (p) {
+        next[i] = {
+          ...next[i],
+          productId: p.id,
+          description: p.name,
+          quantity: next[i].quantity || 1,
+          unitPrice: p.unitPrice,
+          taxRate: p.taxRate,
+          hsCode: p.hsCode || '',
+          uom: p.uom || ''
+        }
+      }
     }
+
     setInvoice({ ...invoice, lines: next })
   }
 
-  const saveInvoice = async (e) => {
-    e.preventDefault()
-    await api.request('/api/invoices', { method: 'POST', body: JSON.stringify(invoice) })
+  const addInvoiceLine = () => {
+    setInvoice({ ...invoice, lines: [...invoice.lines, { ...emptyLine }] })
+  }
+
+  const createInlineCustomerIfNeeded = async () => {
+    if (!showNewCustomer) return invoice.customerId
+    if (!customer.name.trim()) throw new Error('Customer name is required')
+
+    const res = await api.request('/api/customers', {
+      method: 'POST',
+      body: JSON.stringify(customer)
+    })
+
+    const newId = res.item.id
+    setCustomer(emptyCustomer)
+    setShowNewCustomer(false)
+    setInvoice(prev => ({ ...prev, customerId: newId }))
+    return newId
+  }
+
+  const findUnsavedProductLine = () => {
+    return invoice.lines.findIndex(line => !line.productId && line.description.trim())
+  }
+
+  const saveProductFromLine = async (line) => {
+    const payload = {
+      name: line.description,
+      sku: '',
+      hsCode: line.hsCode || '',
+      uom: line.uom || '',
+      taxRate: String(line.taxRate || 0),
+      unitPrice: String(line.unitPrice || 0),
+      description: line.description
+    }
+
+    const res = await api.request('/api/products', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+
+    return res.item
+  }
+
+  const finalizeInvoiceCreate = async (customerIdToUse, linesToUse) => {
+    await api.request('/api/invoices', {
+      method: 'POST',
+      body: JSON.stringify({
+        customerId: customerIdToUse,
+        invoiceDate: invoice.invoiceDate,
+        lines: linesToUse
+      })
+    })
+
     setInvoice({
       customerId: '',
       invoiceDate: new Date().toISOString().slice(0, 10),
-      lines: [{ productId: '', description: '', quantity: 1, unitPrice: 0, taxRate: 18, hsCode: '', uom: '' }]
+      lines: [{ ...emptyLine }]
     })
+    setPageError('')
     await loadAll()
+  }
+
+  const saveInvoiceHandler = async (e) => {
+    e.preventDefault()
+    try {
+      const customerIdToUse = await createInlineCustomerIfNeeded()
+      if (!customerIdToUse) throw new Error('Please select or create a customer')
+
+      const unsavedIndex = findUnsavedProductLine()
+      if (unsavedIndex !== -1) {
+        setSaveProductPrompt({ open: true, lineIndex: unsavedIndex })
+        return
+      }
+
+      await finalizeInvoiceCreate(customerIdToUse, invoice.lines)
+    } catch (err) {
+      setPageError(err.message || 'Failed to create invoice')
+    }
+  }
+
+  const handleSaveProductChoice = async (shouldSave) => {
+    try {
+      const customerIdToUse = await createInlineCustomerIfNeeded()
+      let nextLines = [...invoice.lines]
+      const lineIndex = saveProductPrompt.lineIndex
+
+      if (shouldSave && lineIndex !== null) {
+        const createdProduct = await saveProductFromLine(nextLines[lineIndex])
+        nextLines[lineIndex] = {
+          ...nextLines[lineIndex],
+          productId: createdProduct.id,
+          description: createdProduct.name,
+          hsCode: createdProduct.hsCode || nextLines[lineIndex].hsCode,
+          uom: createdProduct.uom || nextLines[lineIndex].uom,
+          unitPrice: createdProduct.unitPrice ?? nextLines[lineIndex].unitPrice,
+          taxRate: createdProduct.taxRate ?? nextLines[lineIndex].taxRate
+        }
+      }
+
+      setSaveProductPrompt({ open: false, lineIndex: null })
+      await finalizeInvoiceCreate(customerIdToUse, nextLines)
+    } catch (err) {
+      setPageError(err.message || 'Failed to continue invoice save')
+    }
   }
 
   const postFbr = async (id) => {
@@ -138,9 +250,9 @@ export default function Home() {
     return (
       <div className="authWrap">
         <form className="card authCard" onSubmit={doLogin}>
-          <p className="eyebrow">Next.js Rebuild</p>
+          <p className="eyebrow">Next.js</p>
           <h1>FBR Digital Invoicing</h1>
-          <p className="muted">Hostinger-friendly version.</p>
+          <p className="muted">Single-page invoice workflow for Hostinger.</p>
           <input placeholder="Email" value={login.email} onChange={e => setLogin({ ...login, email: e.target.value })} />
           <input placeholder="Password" type="password" value={login.password} onChange={e => setLogin({ ...login, password: e.target.value })} />
           {login.error ? <div className="alert error">{login.error}</div> : null}
@@ -157,10 +269,10 @@ export default function Home() {
           <div className="card brand">
             <p className="eyebrow">ERP Foundation</p>
             <h2>FBR Invoicing</h2>
-            <p className="muted">Next.js + API routes</p>
+            <p className="muted">One-page invoice flow</p>
           </div>
           <div className="nav">
-            {['dashboard','customers','products','invoices','logs','settings'].map(item => (
+            {['invoice','dashboard','customers','products','logs','settings'].map(item => (
               <button key={item} className={active === item ? 'navBtn active' : 'navBtn'} onClick={() => setActive(item)}>
                 {item[0].toUpperCase() + item.slice(1)}
               </button>
@@ -169,22 +281,130 @@ export default function Home() {
         </div>
         <button className="secondary" onClick={() => { localStorage.removeItem('token'); setToken('') }}>Logout</button>
       </aside>
+
       <main className="content">
-        {active === 'dashboard' && (
+        {active === 'invoice' && (
           <div className="stack">
-            <div className="stats">
-              <div className="card stat"><p>Total Invoices</p><h3>{metrics.total}</h3></div>
-              <div className="card stat"><p>Posted</p><h3>{metrics.posted}</h3></div>
-              <div className="card stat"><p>Failed</p><h3>{metrics.failed}</h3></div>
-              <div className="card stat"><p>Revenue</p><h3>PKR {metrics.revenue.toLocaleString()}</h3></div>
+            <form className="card stack" onSubmit={saveInvoiceHandler}>
+              <div className="titleRow">
+                <h3>Create Invoice</h3>
+                <input className="dateInput" type="date" value={invoice.invoiceDate} onChange={e => setInvoice({ ...invoice, invoiceDate: e.target.value })} />
+              </div>
+
+              <div className="formGrid">
+                <select
+                  value={invoice.customerId}
+                  onChange={e => {
+                    setInvoice({ ...invoice, customerId: e.target.value })
+                    if (e.target.value) setShowNewCustomer(false)
+                  }}
+                >
+                  <option value="">Select customer</option>
+                  {data.customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    setShowNewCustomer(prev => !prev)
+                    setInvoice({ ...invoice, customerId: '' })
+                  }}
+                >
+                  {showNewCustomer ? 'Cancel New Customer' : '+ New Customer'}
+                </button>
+              </div>
+
+              {showNewCustomer && (
+                <div className="formGrid">
+                  <input placeholder="Customer Name" value={customer.name} onChange={e => setCustomer({ ...customer, name: e.target.value })} />
+                  <input placeholder="NTN/CNIC" value={customer.ntnCnic} onChange={e => setCustomer({ ...customer, ntnCnic: e.target.value })} />
+                  <input placeholder="Phone" value={customer.phone} onChange={e => setCustomer({ ...customer, phone: e.target.value })} />
+                  <input placeholder="Email" value={customer.email} onChange={e => setCustomer({ ...customer, email: e.target.value })} />
+                  <input className="full" placeholder="Address" value={customer.address} onChange={e => setCustomer({ ...customer, address: e.target.value })} />
+                </div>
+              )}
+
+              <div className="tableWrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Product</th>
+                      <th>Description</th>
+                      <th>HS Code</th>
+                      <th>UOM</th>
+                      <th>Qty</th>
+                      <th>Price</th>
+                      <th>Tax %</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invoice.lines.map((line, i) => (
+                      <tr key={i}>
+                        <td>
+                          <select value={line.productId} onChange={e => updateLine(i, 'productId', e.target.value)}>
+                            <option value="">Select existing product</option>
+                            {data.products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                          </select>
+                        </td>
+                        <td><input placeholder="Type product name or custom item" value={line.description} onChange={e => updateLine(i, 'description', e.target.value)} /></td>
+                        <td><input value={line.hsCode} onChange={e => updateLine(i, 'hsCode', e.target.value)} /></td>
+                        <td><input value={line.uom} onChange={e => updateLine(i, 'uom', e.target.value)} /></td>
+                        <td><input value={line.quantity} onChange={e => updateLine(i, 'quantity', e.target.value)} /></td>
+                        <td><input value={line.unitPrice} onChange={e => updateLine(i, 'unitPrice', e.target.value)} /></td>
+                        <td><input value={line.taxRate} onChange={e => updateLine(i, 'taxRate', e.target.value)} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="row">
+                <button type="button" className="secondary" onClick={addInvoiceLine}>Add Line</button>
+                <div className="totals">
+                  <p>Subtotal: <strong>PKR {totals.subTotal.toLocaleString()}</strong></p>
+                  <p>Tax: <strong>PKR {totals.taxTotal.toLocaleString()}</strong></p>
+                  <p>Total: <strong>PKR {totals.grandTotal.toLocaleString()}</strong></p>
+                </div>
+              </div>
+
+              {pageError ? <div className="alert error">{pageError}</div> : null}
+              <button className="primary">Create Invoice</button>
+            </form>
+
+            <div className="card tableWrap">
+              <h3>Recent Invoices</h3>
+              <table>
+                <thead><tr><th>Invoice No</th><th>Customer</th><th>Status</th><th>Total</th><th>Action</th></tr></thead>
+                <tbody>
+                  {[...data.invoices].reverse().map(inv => (
+                    <tr key={inv.id}>
+                      <td>{inv.invoiceNumber}</td>
+                      <td>{inv.customerName}</td>
+                      <td>{inv.status}</td>
+                      <td>PKR {Number(inv.grandTotal || 0).toLocaleString()}</td>
+                      <td><button className="linkBtn" onClick={() => postFbr(inv.id)}>Post to FBR</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
+          </div>
+        )}
+
+        {active === 'dashboard' && (
+          <div className="stats">
+            <div className="card stat"><p>Total Invoices</p><h3>{metrics.total}</h3></div>
+            <div className="card stat"><p>Posted</p><h3>{metrics.posted}</h3></div>
+            <div className="card stat"><p>Failed</p><h3>{metrics.failed}</h3></div>
+            <div className="card stat"><p>Revenue</p><h3>PKR {metrics.revenue.toLocaleString()}</h3></div>
           </div>
         )}
 
         {active === 'customers' && (
           <div className="stack">
             <form className="card formGrid" onSubmit={saveCustomer}>
-              <h3>Add Customer</h3>
+              <h3 className="full">Add Customer</h3>
               <input placeholder="Customer Name" value={customer.name} onChange={e => setCustomer({ ...customer, name: e.target.value })} required />
               <input placeholder="NTN/CNIC" value={customer.ntnCnic} onChange={e => setCustomer({ ...customer, ntnCnic: e.target.value })} />
               <input placeholder="Phone" value={customer.phone} onChange={e => setCustomer({ ...customer, phone: e.target.value })} />
@@ -192,6 +412,7 @@ export default function Home() {
               <input className="full" placeholder="Address" value={customer.address} onChange={e => setCustomer({ ...customer, address: e.target.value })} />
               <button className="primary">Save Customer</button>
             </form>
+
             <div className="card tableWrap">
               <h3>Customers</h3>
               <table><thead><tr><th>Name</th><th>NTN/CNIC</th><th>Phone</th><th>Email</th></tr></thead><tbody>
@@ -204,7 +425,7 @@ export default function Home() {
         {active === 'products' && (
           <div className="stack">
             <form className="card formGrid" onSubmit={saveProduct}>
-              <h3>Add Product</h3>
+              <h3 className="full">Add Product</h3>
               <input placeholder="Product Name" value={product.name} onChange={e => setProduct({ ...product, name: e.target.value })} required />
               <input placeholder="SKU" value={product.sku} onChange={e => setProduct({ ...product, sku: e.target.value })} />
               <input placeholder="HS Code" value={product.hsCode} onChange={e => setProduct({ ...product, hsCode: e.target.value })} />
@@ -214,61 +435,11 @@ export default function Home() {
               <input className="full" placeholder="Description" value={product.description} onChange={e => setProduct({ ...product, description: e.target.value })} />
               <button className="primary">Save Product</button>
             </form>
+
             <div className="card tableWrap">
               <h3>Products</h3>
               <table><thead><tr><th>Name</th><th>HS Code</th><th>UOM</th><th>Tax</th><th>Price</th></tr></thead><tbody>
                 {data.products.map(p => <tr key={p.id}><td>{p.name}</td><td>{p.hsCode || '-'}</td><td>{p.uom || '-'}</td><td>{p.taxRate}%</td><td>PKR {Number(p.unitPrice || 0).toLocaleString()}</td></tr>)}
-              </tbody></table>
-            </div>
-          </div>
-        )}
-
-        {active === 'invoices' && (
-          <div className="stack">
-            <form className="card stack" onSubmit={saveInvoice}>
-              <h3>Create Invoice</h3>
-              <div className="formGrid">
-                <select value={invoice.customerId} onChange={e => setInvoice({ ...invoice, customerId: e.target.value })} required>
-                  <option value="">Select customer</option>
-                  {data.customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-                <input type="date" value={invoice.invoiceDate} onChange={e => setInvoice({ ...invoice, invoiceDate: e.target.value })} />
-              </div>
-              <div className="tableWrap">
-                <table>
-                  <thead><tr><th>Product</th><th>Description</th><th>Qty</th><th>Price</th><th>Tax</th></tr></thead>
-                  <tbody>
-                    {invoice.lines.map((line, i) => (
-                      <tr key={i}>
-                        <td>
-                          <select value={line.productId} onChange={e => updateLine(i, 'productId', e.target.value)}>
-                            <option value="">Select product</option>
-                            {data.products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                          </select>
-                        </td>
-                        <td><input value={line.description} onChange={e => updateLine(i, 'description', e.target.value)} /></td>
-                        <td><input value={line.quantity} onChange={e => updateLine(i, 'quantity', e.target.value)} /></td>
-                        <td><input value={line.unitPrice} onChange={e => updateLine(i, 'unitPrice', e.target.value)} /></td>
-                        <td><input value={line.taxRate} onChange={e => updateLine(i, 'taxRate', e.target.value)} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="row">
-                <button type="button" className="secondary" onClick={() => setInvoice({ ...invoice, lines: [...invoice.lines, { productId: '', description: '', quantity: 1, unitPrice: 0, taxRate: 18, hsCode: '', uom: '' }] })}>Add Line</button>
-                <div className="totals">
-                  <p>Subtotal: <strong>PKR {totals.subTotal.toLocaleString()}</strong></p>
-                  <p>Tax: <strong>PKR {totals.taxTotal.toLocaleString()}</strong></p>
-                  <p>Total: <strong>PKR {totals.grandTotal.toLocaleString()}</strong></p>
-                </div>
-              </div>
-              <button className="primary">Create Invoice</button>
-            </form>
-            <div className="card tableWrap">
-              <h3>Invoices</h3>
-              <table><thead><tr><th>Invoice No</th><th>Customer</th><th>Status</th><th>Total</th><th>Action</th></tr></thead><tbody>
-                {[...data.invoices].reverse().map(inv => <tr key={inv.id}><td>{inv.invoiceNumber}</td><td>{inv.customerName}</td><td>{inv.status}</td><td>PKR {Number(inv.grandTotal || 0).toLocaleString()}</td><td><button className="linkBtn" onClick={() => postFbr(inv.id)}>Post to FBR</button></td></tr>)}
               </tbody></table>
             </div>
           </div>
@@ -298,6 +469,23 @@ export default function Home() {
           </form>
         )}
       </main>
+
+      {saveProductPrompt.open && (
+        <div className="modalOverlay">
+          <div className="card modalCard">
+            <h3>Save product for future?</h3>
+            <p className="muted">This line item is a new product. Do you want to save it in your product list for future invoices?</p>
+            <div className="row">
+              <button type="button" className="secondary" onClick={() => handleSaveProductChoice(false)}>
+                No, use only for this invoice
+              </button>
+              <button type="button" className="primary" onClick={() => handleSaveProductChoice(true)}>
+                Yes, save product
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
