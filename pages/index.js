@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 
+const SCENARIOS = [
+  { code: 'SN001', label: 'SN001 - Registered Buyer', taxRate: 18, furtherTax: 0 },
+  { code: 'SN002', label: 'SN002 - Unregistered Buyer', taxRate: 18, furtherTax: 4 }
+]
+
 const api = {
   async request(path, options = {}) {
     const token = typeof window !== 'undefined' ? localStorage.getItem('token') : ''
@@ -16,10 +21,16 @@ const emptyCustomer = { name: '', ntnCnic: '', phone: '', email: '', address: ''
 const emptyProduct = { name: '', sku: '', hsCode: '', uom: '', taxRate: '18', unitPrice: '', description: '' }
 const emptyLine = { productId: '', description: '', quantity: 1, unitPrice: 0, taxRate: 18, hsCode: '', uom: '' }
 
-function calc(lines) {
+function getScenario(code) {
+  return SCENARIOS.find(item => item.code === code) || SCENARIOS[0]
+}
+
+function calc(lines, scenarioCode) {
+  const scenario = getScenario(scenarioCode)
   const subTotal = lines.reduce((s, line) => s + Number(line.quantity || 0) * Number(line.unitPrice || 0), 0)
-  const taxTotal = lines.reduce((s, line) => s + (Number(line.quantity || 0) * Number(line.unitPrice || 0) * Number(line.taxRate || 0) / 100), 0)
-  return { subTotal, taxTotal, grandTotal: subTotal + taxTotal }
+  const salesTax = lines.reduce((s, line) => s + (Number(line.quantity || 0) * Number(line.unitPrice || 0) * Number(line.taxRate || 0) / 100), 0)
+  const furtherTax = subTotal * Number(scenario.furtherTax || 0) / 100
+  return { subTotal, salesTax, furtherTax, grandTotal: subTotal + salesTax + furtherTax }
 }
 
 export default function Home() {
@@ -31,6 +42,7 @@ export default function Home() {
   const [product, setProduct] = useState(emptyProduct)
   const [invoice, setInvoice] = useState({
     customerId: '',
+    scenarioCode: 'SN001',
     invoiceDate: new Date().toISOString().slice(0, 10),
     lines: [{ ...emptyLine }]
   })
@@ -38,6 +50,7 @@ export default function Home() {
   const [saveProductPrompt, setSaveProductPrompt] = useState({ open: false, lineIndex: null })
   const [msg, setMsg] = useState('')
   const [pageError, setPageError] = useState('')
+  const [fbrResult, setFbrResult] = useState(null)
 
   const loadAll = async () => {
     const [customers, products, invoices, logs, settings] = await Promise.all([
@@ -77,7 +90,7 @@ export default function Home() {
     revenue: data.invoices.reduce((s, x) => s + Number(x.grandTotal || 0), 0)
   }), [data.invoices])
 
-  const totals = useMemo(() => calc(invoice.lines), [invoice.lines])
+  const totals = useMemo(() => calc(invoice.lines, invoice.scenarioCode), [invoice.lines, invoice.scenarioCode])
 
   const doLogin = async (e) => {
     e.preventDefault()
@@ -105,10 +118,23 @@ export default function Home() {
     await loadAll()
   }
 
+  const handleCustomerSelect = (value) => {
+    const selected = data.customers.find(c => c.id === value)
+    let scenarioCode = invoice.scenarioCode
+    if (selected) scenarioCode = selected.ntnCnic ? 'SN001' : 'SN002'
+    setInvoice({ ...invoice, customerId: value, scenarioCode })
+    if (value) setShowNewCustomer(false)
+  }
+
+  const handleScenarioChange = (scenarioCode) => {
+    const scenario = getScenario(scenarioCode)
+    const next = invoice.lines.map(line => ({ ...line, taxRate: scenario.taxRate }))
+    setInvoice({ ...invoice, scenarioCode, lines: next })
+  }
+
   const updateLine = (i, key, value) => {
     const next = [...invoice.lines]
     next[i] = { ...next[i], [key]: value }
-
     if (key === 'productId') {
       const p = data.products.find(x => x.id === value)
       if (p) {
@@ -118,39 +144,33 @@ export default function Home() {
           description: p.name,
           quantity: next[i].quantity || 1,
           unitPrice: p.unitPrice,
-          taxRate: p.taxRate,
+          taxRate: p.taxRate ?? getScenario(invoice.scenarioCode).taxRate,
           hsCode: p.hsCode || '',
           uom: p.uom || ''
         }
       }
     }
-
     setInvoice({ ...invoice, lines: next })
   }
 
   const addInvoiceLine = () => {
-    setInvoice({ ...invoice, lines: [...invoice.lines, { ...emptyLine }] })
+    setInvoice({ ...invoice, lines: [...invoice.lines, { ...emptyLine, taxRate: getScenario(invoice.scenarioCode).taxRate }] })
   }
 
   const createInlineCustomerIfNeeded = async () => {
     if (!showNewCustomer) return invoice.customerId
     if (!customer.name.trim()) throw new Error('Customer name is required')
 
-    const res = await api.request('/api/customers', {
-      method: 'POST',
-      body: JSON.stringify(customer)
-    })
-
+    const res = await api.request('/api/customers', { method: 'POST', body: JSON.stringify(customer) })
     const newId = res.item.id
+    const suggestedScenario = customer.ntnCnic ? 'SN001' : 'SN002'
     setCustomer(emptyCustomer)
     setShowNewCustomer(false)
-    setInvoice(prev => ({ ...prev, customerId: newId }))
+    setInvoice(prev => ({ ...prev, customerId: newId, scenarioCode: suggestedScenario }))
     return newId
   }
 
-  const findUnsavedProductLine = () => {
-    return invoice.lines.findIndex(line => !line.productId && line.description.trim())
-  }
+  const findUnsavedProductLine = () => invoice.lines.findIndex(line => !line.productId && line.description.trim())
 
   const saveProductFromLine = async (line) => {
     const payload = {
@@ -162,20 +182,16 @@ export default function Home() {
       unitPrice: String(line.unitPrice || 0),
       description: line.description
     }
-
-    const res = await api.request('/api/products', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    })
-
+    const res = await api.request('/api/products', { method: 'POST', body: JSON.stringify(payload) })
     return res.item
   }
 
-  const finalizeInvoiceCreate = async (customerIdToUse, linesToUse) => {
+  const finalizeInvoiceCreate = async (customerIdToUse, linesToUse, scenarioCodeToUse) => {
     await api.request('/api/invoices', {
       method: 'POST',
       body: JSON.stringify({
         customerId: customerIdToUse,
+        scenarioCode: scenarioCodeToUse,
         invoiceDate: invoice.invoiceDate,
         lines: linesToUse
       })
@@ -183,6 +199,7 @@ export default function Home() {
 
     setInvoice({
       customerId: '',
+      scenarioCode: data.settings.defaultScenarioCode || 'SN001',
       invoiceDate: new Date().toISOString().slice(0, 10),
       lines: [{ ...emptyLine }]
     })
@@ -195,14 +212,12 @@ export default function Home() {
     try {
       const customerIdToUse = await createInlineCustomerIfNeeded()
       if (!customerIdToUse) throw new Error('Please select or create a customer')
-
       const unsavedIndex = findUnsavedProductLine()
       if (unsavedIndex !== -1) {
         setSaveProductPrompt({ open: true, lineIndex: unsavedIndex })
         return
       }
-
-      await finalizeInvoiceCreate(customerIdToUse, invoice.lines)
+      await finalizeInvoiceCreate(customerIdToUse, invoice.lines, invoice.scenarioCode)
     } catch (err) {
       setPageError(err.message || 'Failed to create invoice')
     }
@@ -213,7 +228,6 @@ export default function Home() {
       const customerIdToUse = await createInlineCustomerIfNeeded()
       let nextLines = [...invoice.lines]
       const lineIndex = saveProductPrompt.lineIndex
-
       if (shouldSave && lineIndex !== null) {
         const createdProduct = await saveProductFromLine(nextLines[lineIndex])
         nextLines[lineIndex] = {
@@ -226,17 +240,31 @@ export default function Home() {
           taxRate: createdProduct.taxRate ?? nextLines[lineIndex].taxRate
         }
       }
-
       setSaveProductPrompt({ open: false, lineIndex: null })
-      await finalizeInvoiceCreate(customerIdToUse, nextLines)
+      await finalizeInvoiceCreate(customerIdToUse, nextLines, invoice.scenarioCode)
     } catch (err) {
       setPageError(err.message || 'Failed to continue invoice save')
     }
   }
 
+  const validateFbr = async (id) => {
+    try {
+      const res = await api.request(`/api/invoices/${id}/validate-fbr`, { method: 'POST' })
+      setFbrResult({ type: 'validate', payload: res })
+      await loadAll()
+    } catch (err) {
+      setPageError(err.message)
+    }
+  }
+
   const postFbr = async (id) => {
-    await api.request(`/api/invoices/${id}/submit-fbr`, { method: 'POST' })
-    await loadAll()
+    try {
+      const res = await api.request(`/api/invoices/${id}/submit-fbr`, { method: 'POST' })
+      setFbrResult({ type: 'submit', payload: res })
+      await loadAll()
+    } catch (err) {
+      setPageError(err.message)
+    }
   }
 
   const saveSettings = async (e) => {
@@ -251,8 +279,8 @@ export default function Home() {
       <div className="authWrap">
         <form className="card authCard" onSubmit={doLogin}>
           <p className="eyebrow">Next.js</p>
-          <h1>FBR Digital Invoicing</h1>
-          <p className="muted">Single-page invoice workflow for Hostinger.</p>
+          <h1>FBR Sandbox Ready</h1>
+          <p className="muted">SN001 / SN002 testing version for Hostinger.</p>
           <input placeholder="Email" value={login.email} onChange={e => setLogin({ ...login, email: e.target.value })} />
           <input placeholder="Password" type="password" value={login.password} onChange={e => setLogin({ ...login, password: e.target.value })} />
           {login.error ? <div className="alert error">{login.error}</div> : null}
@@ -262,6 +290,8 @@ export default function Home() {
     )
   }
 
+  const currentScenario = getScenario(invoice.scenarioCode)
+
   return (
     <div className="layout">
       <aside className="sidebar">
@@ -269,7 +299,7 @@ export default function Home() {
           <div className="card brand">
             <p className="eyebrow">ERP Foundation</p>
             <h2>FBR Invoicing</h2>
-            <p className="muted">One-page invoice flow</p>
+            <p className="muted">Sandbox-ready SN001/SN002</p>
           </div>
           <div className="nav">
             {['invoice','dashboard','customers','products','logs','settings'].map(item => (
@@ -292,13 +322,7 @@ export default function Home() {
               </div>
 
               <div className="formGrid">
-                <select
-                  value={invoice.customerId}
-                  onChange={e => {
-                    setInvoice({ ...invoice, customerId: e.target.value })
-                    if (e.target.value) setShowNewCustomer(false)
-                  }}
-                >
+                <select value={invoice.customerId} onChange={e => handleCustomerSelect(e.target.value)}>
                   <option value="">Select customer</option>
                   {data.customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
@@ -324,6 +348,16 @@ export default function Home() {
                   <input className="full" placeholder="Address" value={customer.address} onChange={e => setCustomer({ ...customer, address: e.target.value })} />
                 </div>
               )}
+
+              <div className="formGrid">
+                <select value={invoice.scenarioCode} onChange={e => handleScenarioChange(e.target.value)}>
+                  {SCENARIOS.map(item => <option key={item.code} value={item.code}>{item.label}</option>)}
+                </select>
+                <div className="scenarioBox">
+                  <strong>{currentScenario.code}</strong>
+                  <span>{currentScenario.label.replace(`${currentScenario.code} - `, '')}</span>
+                </div>
+              </div>
 
               <div className="tableWrap">
                 <table>
@@ -363,7 +397,8 @@ export default function Home() {
                 <button type="button" className="secondary" onClick={addInvoiceLine}>Add Line</button>
                 <div className="totals">
                   <p>Subtotal: <strong>PKR {totals.subTotal.toLocaleString()}</strong></p>
-                  <p>Tax: <strong>PKR {totals.taxTotal.toLocaleString()}</strong></p>
+                  <p>Sales Tax: <strong>PKR {totals.salesTax.toLocaleString()}</strong></p>
+                  <p>Further Tax: <strong>PKR {totals.furtherTax.toLocaleString()}</strong></p>
                   <p>Total: <strong>PKR {totals.grandTotal.toLocaleString()}</strong></p>
                 </div>
               </div>
@@ -375,20 +410,31 @@ export default function Home() {
             <div className="card tableWrap">
               <h3>Recent Invoices</h3>
               <table>
-                <thead><tr><th>Invoice No</th><th>Customer</th><th>Status</th><th>Total</th><th>Action</th></tr></thead>
+                <thead><tr><th>Invoice No</th><th>Scenario</th><th>Customer</th><th>Status</th><th>Total</th><th>Actions</th></tr></thead>
                 <tbody>
                   {[...data.invoices].reverse().map(inv => (
                     <tr key={inv.id}>
                       <td>{inv.invoiceNumber}</td>
+                      <td>{inv.scenarioCode || '-'}</td>
                       <td>{inv.customerName}</td>
                       <td>{inv.status}</td>
                       <td>PKR {Number(inv.grandTotal || 0).toLocaleString()}</td>
-                      <td><button className="linkBtn" onClick={() => postFbr(inv.id)}>Post to FBR</button></td>
+                      <td className="actionCell">
+                        <button className="linkBtn" onClick={() => validateFbr(inv.id)}>Validate</button>
+                        <button className="linkBtn" onClick={() => postFbr(inv.id)}>Post to FBR</button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+
+            {fbrResult ? (
+              <div className="card">
+                <h3>{fbrResult.type === 'validate' ? 'Validation Result' : 'Submission Result'}</h3>
+                <pre className="codeBlock">{JSON.stringify(fbrResult.payload, null, 2)}</pre>
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -448,8 +494,8 @@ export default function Home() {
         {active === 'logs' && (
           <div className="card tableWrap">
             <h3>FBR Logs</h3>
-            <table><thead><tr><th>Time</th><th>Invoice</th><th>Status</th><th>Reference</th><th>Message</th></tr></thead><tbody>
-              {[...data.logs].reverse().map(log => <tr key={log.id}><td>{log.createdAt}</td><td>{log.invoiceNumber}</td><td>{log.status}</td><td>{log.reference}</td><td>{log.message}</td></tr>)}
+            <table><thead><tr><th>Time</th><th>Invoice</th><th>Scenario</th><th>Status</th><th>Reference</th><th>Message</th></tr></thead><tbody>
+              {[...data.logs].reverse().map(log => <tr key={log.id}><td>{log.createdAt}</td><td>{log.invoiceNumber}</td><td>{log.scenarioCode || '-'}</td><td>{log.status}</td><td>{log.reference || '-'}</td><td>{log.message}</td></tr>)}
             </tbody></table>
           </div>
         )}
@@ -458,12 +504,14 @@ export default function Home() {
           <form className="card formGrid" onSubmit={saveSettings}>
             <h3 className="full">Settings</h3>
             <input placeholder="Company Name" value={data.settings.companyName || ''} onChange={e => setData({ ...data, settings: { ...data.settings, companyName: e.target.value } })} />
-            <input placeholder="NTN" value={data.settings.ntn || ''} onChange={e => setData({ ...data, settings: { ...data.settings, ntn: e.target.value } })} />
-            <input className="full" placeholder="Address" value={data.settings.address || ''} onChange={e => setData({ ...data, settings: { ...data.settings, address: e.target.value } })} />
+            <input placeholder="Seller NTN" value={data.settings.sellerNTN || ''} onChange={e => setData({ ...data, settings: { ...data.settings, sellerNTN: e.target.value } })} />
+            <input placeholder="Seller Business Name" value={data.settings.sellerBusinessName || ''} onChange={e => setData({ ...data, settings: { ...data.settings, sellerBusinessName: e.target.value } })} />
+            <input placeholder="Seller Province" value={data.settings.sellerProvince || ''} onChange={e => setData({ ...data, settings: { ...data.settings, sellerProvince: e.target.value } })} />
+            <input className="full" placeholder="Seller Address" value={data.settings.sellerAddress || ''} onChange={e => setData({ ...data, settings: { ...data.settings, sellerAddress: e.target.value } })} />
             <input placeholder="Invoice Prefix" value={data.settings.invoicePrefix || 'INV'} onChange={e => setData({ ...data, settings: { ...data.settings, invoicePrefix: e.target.value } })} />
             <input placeholder="Default Tax Rate" value={data.settings.defaultTaxRate || '18'} onChange={e => setData({ ...data, settings: { ...data.settings, defaultTaxRate: e.target.value } })} />
-            <input className="full" placeholder="FBR Base URL" value={data.settings.fbrBaseUrl || ''} onChange={e => setData({ ...data, settings: { ...data.settings, fbrBaseUrl: e.target.value } })} />
-            <input className="full" placeholder="FBR API Key" value={data.settings.fbrApiKey || ''} onChange={e => setData({ ...data, settings: { ...data.settings, fbrApiKey: e.target.value } })} />
+            <input className="full" placeholder="FBR Sandbox Base URL" value={data.settings.fbrSandboxBaseUrl || ''} onChange={e => setData({ ...data, settings: { ...data.settings, fbrSandboxBaseUrl: e.target.value } })} />
+            <input className="full" placeholder="FBR Sandbox Token" value={data.settings.fbrSandboxToken || ''} onChange={e => setData({ ...data, settings: { ...data.settings, fbrSandboxToken: e.target.value } })} />
             {msg ? <div className="alert success full">{msg}</div> : null}
             <button className="primary">Save Settings</button>
           </form>

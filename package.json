@@ -1,6 +1,6 @@
 {
-  "name": "fbr-nextjs-single-page-app",
-  "version": "1.2.0",
+  "name": "fbr-nextjs-sandbox-ready-app",
+  "version": "1.4.0",
   "private": true,
   "scripts": {
     "dev": "next dev",

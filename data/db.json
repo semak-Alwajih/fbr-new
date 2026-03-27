@@ -5,11 +5,15 @@
   "logs": [],
   "settings": {
     "companyName": "",
-    "ntn": "",
-    "address": "",
+    "sellerNTN": "",
+    "sellerBusinessName": "",
+    "sellerProvince": "",
+    "sellerAddress": "",
     "invoicePrefix": "INV",
     "defaultTaxRate": "18",
-    "fbrBaseUrl": "",
-    "fbrApiKey": ""
+    "fbrSandboxBaseUrl": "https://gw.fbr.gov.pk/di_data/v1/di",
+    "fbrSandboxToken": "",
+    "fbrProductionToken": "",
+    "defaultScenarioCode": "SN001"
   }
 }
