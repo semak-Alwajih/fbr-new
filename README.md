@@ -1,25 +1,20 @@
-# FBR Next.js Sandbox-Ready App (SN001 / SN002)
+# FBR Next.js Exact Schema App
 
-This Hostinger-friendly Next.js version is designed for sandbox testing first.
+This version maps the sandbox payload closer to the exact FBR JSON schema you shared.
 
 Included:
 - single-page invoice workflow
-- SN001 and SN002 focused scenario flow
-- seller settings
-- buyer classification
-- validate payload endpoint
-- post to FBR sandbox endpoint
-- request/response logging
-- payload preview in logs
+- SN001 and SN002 support
+- exact-style seller/buyer field names in payload
+- `sellerNTNCNIC`, `buyerNTNCNIC`, `buyerBusinessName`, `buyerRegistrationType`
+- item keys like `uoM`, `fixedNotifiedValueOrRetailPrice`, `salesTaxWithheldAtSource`, `saleType`
+- validate and post sandbox actions
+- payload preview and logs
 
 ## Hostinger settings
 - Framework: Next.js
 - Build command: npm install && npm run build
 - Start command: npm start
-- Root directory: ./
-
-## Important
-This version is sandbox-ready and much closer to FBR integration, but you still need to test the exact official payload against sandbox responses.
 
 ## Default login
 - admin@example.com

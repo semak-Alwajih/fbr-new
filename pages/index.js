@@ -17,7 +17,7 @@ const api = {
   }
 }
 
-const emptyCustomer = { name: '', ntnCnic: '', phone: '', email: '', address: '' }
+const emptyCustomer = { name: '', ntnCnic: '', phone: '', email: '', address: '', province: '' }
 const emptyProduct = { name: '', sku: '', hsCode: '', uom: '', taxRate: '18', unitPrice: '', description: '' }
 const emptyLine = { productId: '', description: '', quantity: 1, unitPrice: 0, taxRate: 18, hsCode: '', uom: '' }
 
@@ -51,6 +51,7 @@ export default function Home() {
   const [msg, setMsg] = useState('')
   const [pageError, setPageError] = useState('')
   const [fbrResult, setFbrResult] = useState(null)
+  const [selectedInvoice, setSelectedInvoice] = useState(null)
 
   const loadAll = async () => {
     const [customers, products, invoices, logs, settings] = await Promise.all([
@@ -157,10 +158,30 @@ export default function Home() {
     setInvoice({ ...invoice, lines: [...invoice.lines, { ...emptyLine, taxRate: getScenario(invoice.scenarioCode).taxRate }] })
   }
 
+  const removeInvoiceLine = (index) => {
+    if (invoice.lines.length === 1) return
+    setInvoice({ ...invoice, lines: invoice.lines.filter((_, i) => i !== index) })
+  }
+
+  const validateInvoiceForm = () => {
+    const errors = []
+    if (!invoice.customerId && !showNewCustomer) errors.push('Select a customer or create a new one')
+    if (showNewCustomer && !customer.name.trim()) errors.push('New customer name is required')
+
+    invoice.lines.forEach((line, idx) => {
+      if (!line.description?.trim()) errors.push(`Line ${idx + 1}: description is required`)
+      if (!line.hsCode?.trim()) errors.push(`Line ${idx + 1}: HS code is required`)
+      if (!line.uom?.trim()) errors.push(`Line ${idx + 1}: UOM is required`)
+      if (!Number(line.quantity) || Number(line.quantity) <= 0) errors.push(`Line ${idx + 1}: quantity must be greater than zero`)
+      if (Number(line.unitPrice) <= 0) errors.push(`Line ${idx + 1}: price must be greater than zero`)
+      if (Number(line.taxRate) < 0) errors.push(`Line ${idx + 1}: tax rate must be valid`)
+    })
+
+    return errors
+  }
+
   const createInlineCustomerIfNeeded = async () => {
     if (!showNewCustomer) return invoice.customerId
-    if (!customer.name.trim()) throw new Error('Customer name is required')
-
     const res = await api.request('/api/customers', { method: 'POST', body: JSON.stringify(customer) })
     const newId = res.item.id
     const suggestedScenario = customer.ntnCnic ? 'SN001' : 'SN002'
@@ -210,8 +231,13 @@ export default function Home() {
   const saveInvoiceHandler = async (e) => {
     e.preventDefault()
     try {
+      const validationErrors = validateInvoiceForm()
+      if (validationErrors.length) {
+        setPageError(validationErrors.join(' | '))
+        return
+      }
+
       const customerIdToUse = await createInlineCustomerIfNeeded()
-      if (!customerIdToUse) throw new Error('Please select or create a customer')
       const unsavedIndex = findUnsavedProductLine()
       if (unsavedIndex !== -1) {
         setSaveProductPrompt({ open: true, lineIndex: unsavedIndex })
@@ -267,6 +293,16 @@ export default function Home() {
     }
   }
 
+  const deleteInvoice = async (id) => {
+    try {
+      await api.request(`/api/invoices/${id}`, { method: 'DELETE' })
+      if (selectedInvoice?.id === id) setSelectedInvoice(null)
+      await loadAll()
+    } catch (err) {
+      setPageError(err.message)
+    }
+  }
+
   const saveSettings = async (e) => {
     e.preventDefault()
     await api.request('/api/settings', { method: 'PUT', body: JSON.stringify(data.settings) })
@@ -299,7 +335,7 @@ export default function Home() {
           <div className="card brand">
             <p className="eyebrow">ERP Foundation</p>
             <h2>FBR Invoicing</h2>
-            <p className="muted">Sandbox-ready SN001/SN002</p>
+            <p className="muted">Exact-schema SN001/SN002</p>
           </div>
           <div className="nav">
             {['invoice','dashboard','customers','products','logs','settings'].map(item => (
@@ -327,14 +363,10 @@ export default function Home() {
                   {data.customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
 
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => {
-                    setShowNewCustomer(prev => !prev)
-                    setInvoice({ ...invoice, customerId: '' })
-                  }}
-                >
+                <button type="button" className="secondary" onClick={() => {
+                  setShowNewCustomer(prev => !prev)
+                  setInvoice({ ...invoice, customerId: '' })
+                }}>
                   {showNewCustomer ? 'Cancel New Customer' : '+ New Customer'}
                 </button>
               </div>
@@ -345,6 +377,7 @@ export default function Home() {
                   <input placeholder="NTN/CNIC" value={customer.ntnCnic} onChange={e => setCustomer({ ...customer, ntnCnic: e.target.value })} />
                   <input placeholder="Phone" value={customer.phone} onChange={e => setCustomer({ ...customer, phone: e.target.value })} />
                   <input placeholder="Email" value={customer.email} onChange={e => setCustomer({ ...customer, email: e.target.value })} />
+                  <input placeholder="Province" value={customer.province} onChange={e => setCustomer({ ...customer, province: e.target.value })} />
                   <input className="full" placeholder="Address" value={customer.address} onChange={e => setCustomer({ ...customer, address: e.target.value })} />
                 </div>
               )}
@@ -370,6 +403,7 @@ export default function Home() {
                       <th>Qty</th>
                       <th>Price</th>
                       <th>Tax %</th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -387,6 +421,7 @@ export default function Home() {
                         <td><input value={line.quantity} onChange={e => updateLine(i, 'quantity', e.target.value)} /></td>
                         <td><input value={line.unitPrice} onChange={e => updateLine(i, 'unitPrice', e.target.value)} /></td>
                         <td><input value={line.taxRate} onChange={e => updateLine(i, 'taxRate', e.target.value)} /></td>
+                        <td><button type="button" className="linkBtn" onClick={() => removeInvoiceLine(i)}>Remove</button></td>
                       </tr>
                     ))}
                   </tbody>
@@ -420,14 +455,45 @@ export default function Home() {
                       <td>{inv.status}</td>
                       <td>PKR {Number(inv.grandTotal || 0).toLocaleString()}</td>
                       <td className="actionCell">
+                        <button className="linkBtn" onClick={() => setSelectedInvoice(inv)}>View</button>
                         <button className="linkBtn" onClick={() => validateFbr(inv.id)}>Validate</button>
                         <button className="linkBtn" onClick={() => postFbr(inv.id)}>Post to FBR</button>
+                        <button className="linkBtn dangerText" onClick={() => deleteInvoice(inv.id)}>Delete</button>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+
+            {selectedInvoice ? (
+              <div className="card">
+                <div className="titleRow">
+                  <h3>Invoice Details - {selectedInvoice.invoiceNumber}</h3>
+                  <button className="secondary" type="button" onClick={() => setSelectedInvoice(null)}>Close</button>
+                </div>
+                <p><strong>Scenario:</strong> {selectedInvoice.scenarioCode}</p>
+                <p><strong>Customer:</strong> {selectedInvoice.customerName}</p>
+                <p><strong>Status:</strong> {selectedInvoice.status}</p>
+                <div className="tableWrap">
+                  <table>
+                    <thead><tr><th>Description</th><th>HS Code</th><th>UOM</th><th>Qty</th><th>Price</th><th>Tax %</th></tr></thead>
+                    <tbody>
+                      {(selectedInvoice.lines || []).map((line, idx) => (
+                        <tr key={idx}>
+                          <td>{line.description}</td>
+                          <td>{line.hsCode}</td>
+                          <td>{line.uom}</td>
+                          <td>{line.quantity}</td>
+                          <td>{line.unitPrice}</td>
+                          <td>{line.taxRate}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : null}
 
             {fbrResult ? (
               <div className="card">
@@ -455,6 +521,7 @@ export default function Home() {
               <input placeholder="NTN/CNIC" value={customer.ntnCnic} onChange={e => setCustomer({ ...customer, ntnCnic: e.target.value })} />
               <input placeholder="Phone" value={customer.phone} onChange={e => setCustomer({ ...customer, phone: e.target.value })} />
               <input placeholder="Email" value={customer.email} onChange={e => setCustomer({ ...customer, email: e.target.value })} />
+              <input placeholder="Province" value={customer.province} onChange={e => setCustomer({ ...customer, province: e.target.value })} />
               <input className="full" placeholder="Address" value={customer.address} onChange={e => setCustomer({ ...customer, address: e.target.value })} />
               <button className="primary">Save Customer</button>
             </form>
@@ -504,7 +571,7 @@ export default function Home() {
           <form className="card formGrid" onSubmit={saveSettings}>
             <h3 className="full">Settings</h3>
             <input placeholder="Company Name" value={data.settings.companyName || ''} onChange={e => setData({ ...data, settings: { ...data.settings, companyName: e.target.value } })} />
-            <input placeholder="Seller NTN" value={data.settings.sellerNTN || ''} onChange={e => setData({ ...data, settings: { ...data.settings, sellerNTN: e.target.value } })} />
+            <input placeholder="Seller NTN/CNIC (7 or 13 digits)" value={data.settings.sellerNTN || ''} onChange={e => setData({ ...data, settings: { ...data.settings, sellerNTN: e.target.value } })} />
             <input placeholder="Seller Business Name" value={data.settings.sellerBusinessName || ''} onChange={e => setData({ ...data, settings: { ...data.settings, sellerBusinessName: e.target.value } })} />
             <input placeholder="Seller Province" value={data.settings.sellerProvince || ''} onChange={e => setData({ ...data, settings: { ...data.settings, sellerProvince: e.target.value } })} />
             <input className="full" placeholder="Seller Address" value={data.settings.sellerAddress || ''} onChange={e => setData({ ...data, settings: { ...data.settings, sellerAddress: e.target.value } })} />

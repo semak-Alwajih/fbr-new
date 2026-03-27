@@ -40,7 +40,7 @@ export default async function handler(req, res) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${settings.fbrSandboxToken}`
+        'Authorization': `Bearer ${String(settings.fbrSandboxToken || '').trim()}`
       },
       body: JSON.stringify(payload)
     })

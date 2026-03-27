@@ -6,9 +6,9 @@ export default function handler(req, res) {
   const db = readDb()
   if (req.method === 'GET') return res.status(200).json({ items: db.customers })
   if (req.method === 'POST') {
-    const { name, ntnCnic = '', phone = '', email = '', address = '' } = req.body || {}
+    const { name, ntnCnic = '', phone = '', email = '', address = '', province = '' } = req.body || {}
     if (!name) return res.status(400).json({ message: 'Customer name is required' })
-    const item = { id: createId('cus'), name, ntnCnic, phone, email, address }
+    const item = { id: createId('cus'), name, ntnCnic, phone, email, address, province }
     db.customers.push(item)
     writeDb(db)
     return res.status(201).json({ item })
