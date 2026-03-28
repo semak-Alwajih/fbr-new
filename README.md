@@ -1,15 +1,14 @@
-# FBR Next.js Exact Schema App
+# FBR Next.js Retail Scenario App
 
-This version maps the sandbox payload closer to the exact FBR JSON schema you shared.
+This version is updated for the scenarios available in your IRIS account:
+- SN008
+- SN026
+- SN027
+- SN028
 
-Included:
-- single-page invoice workflow
-- SN001 and SN002 support
-- exact-style seller/buyer field names in payload
-- `sellerNTNCNIC`, `buyerNTNCNIC`, `buyerBusinessName`, `buyerRegistrationType`
-- item keys like `uoM`, `fixedNotifiedValueOrRetailPrice`, `salesTaxWithheldAtSource`, `saleType`
-- validate and post sandbox actions
-- payload preview and logs
+Important logic:
+- SN026 / SN027 / SN028 send `saleType: "Retail Sale"`
+- SN008 sends `saleType: "Third Schedule Goods"`
 
 ## Hostinger settings
 - Framework: Next.js

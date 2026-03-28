@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 
 const SCENARIOS = [
-  { code: 'SN001', label: 'SN001 - Registered Buyer', taxRate: 18, furtherTax: 0 },
-  { code: 'SN002', label: 'SN002 - Unregistered Buyer', taxRate: 18, furtherTax: 4 }
+  { code: 'SN008', label: 'SN008 - Sale of 3rd Schedule Goods', taxRate: 18, furtherTax: 0 },
+  { code: 'SN026', label: 'SN026 - Sale to End Consumer by Retailers', taxRate: 18, furtherTax: 0 },
+  { code: 'SN027', label: 'SN027 - Sale to End Consumer by Retailers', taxRate: 18, furtherTax: 0 },
+  { code: 'SN028', label: 'SN028 - Sale to End Consumer by Retailers', taxRate: 18, furtherTax: 0 }
 ]
 
 const api = {
@@ -42,7 +44,7 @@ export default function Home() {
   const [product, setProduct] = useState(emptyProduct)
   const [invoice, setInvoice] = useState({
     customerId: '',
-    scenarioCode: 'SN001',
+    scenarioCode: 'SN026',
     invoiceDate: new Date().toISOString().slice(0, 10),
     lines: [{ ...emptyLine }]
   })
@@ -122,7 +124,7 @@ export default function Home() {
   const handleCustomerSelect = (value) => {
     const selected = data.customers.find(c => c.id === value)
     let scenarioCode = invoice.scenarioCode
-    if (selected) scenarioCode = selected.ntnCnic ? 'SN001' : 'SN002'
+    if (selected) scenarioCode = 'SN026'
     setInvoice({ ...invoice, customerId: value, scenarioCode })
     if (value) setShowNewCustomer(false)
   }
@@ -184,7 +186,7 @@ export default function Home() {
     if (!showNewCustomer) return invoice.customerId
     const res = await api.request('/api/customers', { method: 'POST', body: JSON.stringify(customer) })
     const newId = res.item.id
-    const suggestedScenario = customer.ntnCnic ? 'SN001' : 'SN002'
+    const suggestedScenario = 'SN026'
     setCustomer(emptyCustomer)
     setShowNewCustomer(false)
     setInvoice(prev => ({ ...prev, customerId: newId, scenarioCode: suggestedScenario }))
@@ -335,7 +337,7 @@ export default function Home() {
           <div className="card brand">
             <p className="eyebrow">ERP Foundation</p>
             <h2>FBR Invoicing</h2>
-            <p className="muted">Exact-schema SN001/SN002</p>
+            <p className="muted">Retail scenarios</p>
           </div>
           <div className="nav">
             {['invoice','dashboard','customers','products','logs','settings'].map(item => (
